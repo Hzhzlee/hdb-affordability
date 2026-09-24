@@ -58,6 +58,22 @@ export default async function handler(req, res) {
     flatType = flatTypeRaw.trim().toUpperCase();
   }
 
+  // Tolerance percentage (+/- budget)
+  let tolerancePct = 0;
+  if (req.query?.tolerance_pct !== undefined && req.query?.tolerance_pct !== null && String(req.query.tolerance_pct).trim() !== '') {
+    const parsedTol = Number(req.query.tolerance_pct);
+    if (!isNaN(parsedTol) && parsedTol >= 0 && parsedTol <= 100) {
+      tolerancePct = parsedTol;
+    }
+  }
+
+  // Range mode: 'band' (min to max price) or 'ceiling' (up to max price)
+  const rangeMode = String(req.query?.range_mode || 'band').toLowerCase() === 'ceiling' ? 'ceiling' : 'band';
+  const maxPrice = Math.round(budget * (1 + tolerancePct / 100));
+  const minPrice = tolerancePct > 0 && rangeMode === 'band'
+    ? Math.max(0, Math.round(budget * (1 - tolerancePct / 100)))
+    : 0;
+
   // Configure headers for data.gov.sg
   const headers = {};
   const dataGovApiKey = process.env.DATA_GOV_SG_API_KEY;
@@ -174,28 +190,35 @@ export default async function handler(req, res) {
       median = Math.round((prices[count / 2 - 1] + prices[count / 2]) / 2);
     }
 
+    const isWithinBudget = tolerancePct > 0 && rangeMode === 'band'
+      ? median >= minPrice && median <= maxPrice
+      : median <= maxPrice;
+
     towns.push({
       town: townName,
       count,
       median,
       lowest,
-      within_budget: median <= budget,
+      within_budget: isWithinBudget,
+      within_ceiling: median <= maxPrice,
     });
   }
 
   // Sorted by median ascending
   towns.sort((a, b) => a.median - b.median);
 
-  // 5. Compute blocks: up to 50 transactions at or under budget, most recent first
-  const underBudget = validRecords.filter((r) => r.resale_price <= budget);
-  underBudget.sort((a, b) => {
+  // 5. Compute blocks: up to 50 transactions within budget (or +/- tolerance), most recent first
+  const matchingRecords = validRecords.filter(
+    (r) => r.resale_price >= minPrice && r.resale_price <= maxPrice
+  );
+  matchingRecords.sort((a, b) => {
     if (b.month !== a.month) {
       return b.month.localeCompare(a.month);
     }
     return a.resale_price - b.resale_price;
   });
 
-  const blocks = underBudget.slice(0, 50).map((r) => ({
+  const blocks = matchingRecords.slice(0, 50).map((r) => ({
     block: r.block,
     street_name: r.street_name,
     town: r.town,
@@ -212,9 +235,13 @@ export default async function handler(req, res) {
     towns,
     blocks,
     budget,
+    tolerance_pct: tolerancePct,
+    min_price: minPrice,
+    max_price: maxPrice,
+    range_mode: rangeMode,
     flat_type: flatType,
     months,
-    total_found: underBudget.length,
+    total_found: matchingRecords.length,
     latest_month_analyzed: latestMonth,
   });
 }

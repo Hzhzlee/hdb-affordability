@@ -1,6 +1,6 @@
 /**
  * HDB Resale Affordability Search
- * Singapore Resale Flat Price Explorer by Budget & OneMap Visualization
+ * Singapore Resale Flat Price Explorer by Budget (+/- Tolerance) & OneMap Visualization
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
@@ -17,7 +17,9 @@ import {
   List,
   Home,
   CheckCircle2,
-  RefreshCw
+  RefreshCw,
+  Percent,
+  Sliders
 } from 'lucide-react';
 
 interface TownSummary {
@@ -26,6 +28,7 @@ interface TownSummary {
   median: number;
   lowest: number;
   within_budget: boolean;
+  within_ceiling?: boolean;
 }
 
 interface BlockTransaction {
@@ -46,6 +49,10 @@ interface HdbApiResponse {
   towns: TownSummary[];
   blocks: BlockTransaction[];
   budget: number;
+  tolerance_pct?: number;
+  min_price?: number;
+  max_price?: number;
+  range_mode?: 'band' | 'ceiling';
   flat_type: string | null;
   months: number;
   total_found: number;
@@ -72,6 +79,7 @@ const MONTH_OPTIONS = [
 ];
 
 const BUDGET_PRESETS = [400000, 500000, 600000, 750000, 900000];
+const TOLERANCE_PRESETS = [0, 5, 10, 15, 20, 25];
 
 // Format number with SGD currency styling
 function formatSGD(num: number): string {
@@ -85,6 +93,8 @@ function formatSGD(num: number): string {
 export default function App() {
   // Input states
   const [budgetString, setBudgetString] = useState<string>('550,000');
+  const [tolerancePct, setTolerancePct] = useState<number>(10);
+  const [rangeMode, setRangeMode] = useState<'band' | 'ceiling'>('band');
   const [flatType, setFlatType] = useState<string>('4 ROOM');
   const [months, setMonths] = useState<number>(12);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -96,9 +106,23 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [towns, setTowns] = useState<TownSummary[]>([]);
   const [blocks, setBlocks] = useState<BlockTransaction[]>([]);
-  const [searchedBudget, setSearchedBudget] = useState<number>(550000);
   const [selectedTownFilter, setSelectedTownFilter] = useState<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<BlockTransaction | null>(null);
+
+  // Stored search criteria from the latest successful search
+  const [appliedSearch, setAppliedSearch] = useState<{
+    budget: number;
+    tolerancePct: number;
+    rangeMode: 'band' | 'ceiling';
+    minPrice: number;
+    maxPrice: number;
+  }>({
+    budget: 550000,
+    tolerancePct: 10,
+    rangeMode: 'band',
+    minPrice: 495000,
+    maxPrice: 605000,
+  });
 
   // Active view tab on mobile
   const [activeTab, setActiveTab] = useState<'towns' | 'blocks' | 'map'>('towns');
@@ -113,6 +137,22 @@ export default function App() {
   const singaporeBounds = useMemo(() => {
     return L.latLngBounds([1.1304753, 103.59], [1.4705583, 104.094523]);
   }, []);
+
+  // Parse numeric budget live
+  const numericBudget = useMemo(() => {
+    const raw = parseInt(budgetString.replace(/[^0-9]/g, ''), 10);
+    return isNaN(raw) ? 0 : raw;
+  }, [budgetString]);
+
+  // Live preview range calculations
+  const previewMinPrice = useMemo(() => {
+    if (tolerancePct === 0 || rangeMode === 'ceiling') return 0;
+    return Math.max(0, Math.round(numericBudget * (1 - tolerancePct / 100)));
+  }, [numericBudget, tolerancePct, rangeMode]);
+
+  const previewMaxPrice = useMemo(() => {
+    return Math.round(numericBudget * (1 + tolerancePct / 100));
+  }, [numericBudget, tolerancePct]);
 
   // Format budget input with thousands separator
   const handleBudgetChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -140,8 +180,7 @@ export default function App() {
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
 
-    const numericBudget = parseInt(budgetString.replace(/[^0-9]/g, ''), 10);
-    if (isNaN(numericBudget) || numericBudget <= 0) {
+    if (numericBudget <= 0) {
       setValidationError('Please enter a valid positive whole number budget');
       return;
     }
@@ -156,6 +195,8 @@ export default function App() {
       const params = new URLSearchParams({
         budget: String(numericBudget),
         months: String(months),
+        tolerance_pct: String(tolerancePct),
+        range_mode: rangeMode,
       });
       if (flatType) {
         params.append('flat_type', flatType);
@@ -169,8 +210,18 @@ export default function App() {
 
       const data: HdbApiResponse = await res.json();
       setTowns(data.towns || []);
-      setSearchedBudget(numericBudget);
       setSearchDone(true);
+
+      const computedMin = data.min_price !== undefined ? data.min_price : previewMinPrice;
+      const computedMax = data.max_price !== undefined ? data.max_price : previewMaxPrice;
+
+      setAppliedSearch({
+        budget: numericBudget,
+        tolerancePct,
+        rangeMode,
+        minPrice: computedMin,
+        maxPrice: computedMax,
+      });
 
       const rawBlocks = data.blocks || [];
       setBlocks(rawBlocks);
@@ -269,7 +320,6 @@ export default function App() {
     markersLayerRef.current = markersGroup;
     mapInstanceRef.current = map;
 
-    // Force recalculate dimensions on initial load
     setTimeout(() => {
       map.invalidateSize();
     }, 150);
@@ -329,18 +379,33 @@ export default function App() {
           selectedBlock.street_name === blockItem.street_name &&
           selectedBlock.resale_price === blockItem.resale_price;
 
+        // Calculate variance vs target budget
+        const priceDiff = blockItem.resale_price - appliedSearch.budget;
+        const diffPercent = appliedSearch.budget > 0
+          ? ((priceDiff / appliedSearch.budget) * 100).toFixed(1)
+          : '0';
+
+        const isOverBudget = priceDiff > 0;
+        const diffSign = isOverBudget ? '+' : '';
+
+        const pinColor = isSelected
+          ? '#2563eb'
+          : isOverBudget
+          ? '#ea580c'
+          : '#059669';
+
         const pinHtml = isSelected
           ? `<div style="
               display: flex;
               align-items: center;
               justify-content: center;
-              width: 36px;
-              height: 36px;
-              background: #0284c7;
+              width: 38px;
+              height: 38px;
+              background: #2563eb;
               color: white;
               border-radius: 50% 50% 50% 0;
               transform: rotate(-45deg);
-              box-shadow: 0 4px 14px rgba(2, 132, 199, 0.6);
+              box-shadow: 0 4px 14px rgba(37, 99, 235, 0.6);
               border: 3px solid white;
             ">
               <span style="transform: rotate(45deg); font-size: 15px; font-weight: bold; line-height: 1;">🏠</span>
@@ -349,31 +414,46 @@ export default function App() {
               display: flex;
               align-items: center;
               justify-content: center;
-              width: 30px;
-              height: 30px;
-              background: #0f172a;
+              width: 32px;
+              height: 32px;
+              background: ${pinColor};
               color: white;
               border-radius: 50% 50% 50% 0;
               transform: rotate(-45deg);
-              box-shadow: 0 3px 8px rgba(0,0,0,0.35);
+              box-shadow: 0 3px 8px rgba(0,0,0,0.3);
               border: 2px solid white;
             ">
-              <span style="transform: rotate(45deg); font-size: 13px; font-weight: bold; line-height: 1;">🏢</span>
+              <span style="transform: rotate(45deg); font-size: 12px; font-weight: bold; line-height: 1;">🏢</span>
             </div>`;
 
         const pinIcon = L.divIcon({
           className: 'custom-hdb-pin',
           html: pinHtml,
-          iconSize: isSelected ? [36, 36] : [30, 30],
-          iconAnchor: isSelected ? [18, 36] : [15, 30],
-          popupAnchor: [0, -32],
+          iconSize: isSelected ? [38, 38] : [32, 32],
+          iconAnchor: isSelected ? [19, 38] : [16, 32],
+          popupAnchor: [0, -34],
         });
 
         const marker = L.marker([blockItem.lat, blockItem.lng], { icon: pinIcon });
 
+        const varianceBadge = `
+          <span style="
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 6px;
+            background: ${isOverBudget ? '#ffedd5' : '#d1fae5'};
+            color: ${isOverBudget ? '#c2410c' : '#047857'};
+            margin-left: 6px;
+          ">
+            ${diffSign}${diffPercent}% vs Target
+          </span>
+        `;
+
         const popupContent = `
-          <div style="font-family: system-ui, -apple-system, sans-serif; min-width: 210px; padding: 4px;">
-            <div style="font-size: 11px; font-weight: 700; color: #0284c7; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px;">
+          <div style="font-family: system-ui, -apple-system, sans-serif; min-width: 220px; padding: 4px;">
+            <div style="font-size: 11px; font-weight: 700; color: #2563eb; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px;">
               ${blockItem.town}
             </div>
             <div style="font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 6px;">
@@ -385,7 +465,10 @@ export default function App() {
             </div>
             <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0;">
               <span style="font-size: 12px; color: #64748b;">Resale Price:</span>
-              <span style="font-size: 14px; font-weight: 800; color: #059669;">${formatSGD(blockItem.resale_price)}</span>
+              <div style="display: flex; align-items: baseline;">
+                <span style="font-size: 14px; font-weight: 800; color: #059669;">${formatSGD(blockItem.resale_price)}</span>
+                ${appliedSearch.tolerancePct > 0 ? varianceBadge : ''}
+              </div>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
               <span style="font-size: 11px; color: #64748b;">Month:</span>
@@ -419,7 +502,7 @@ export default function App() {
         maxZoom: 16,
       });
     }
-  }, [displayedBlocks, selectedBlock]);
+  }, [displayedBlocks, selectedBlock, appliedSearch]);
 
   // When a block is clicked from list, zoom and open popup
   const handleSelectBlockFromList = (blockItem: BlockTransaction) => {
@@ -508,8 +591,8 @@ export default function App() {
         <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-slate-200">
           <form onSubmit={handleSearch} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-              {/* Budget Input */}
-              <div className="md:col-span-5 space-y-1.5">
+              {/* Target Budget Input */}
+              <div className="md:col-span-4 space-y-1.5">
                 <label htmlFor="budget-input" className="block text-xs font-bold uppercase tracking-wider text-slate-600">
                   Target Budget (SGD) <span className="text-rose-500">*</span>
                 </label>
@@ -539,6 +622,35 @@ export default function App() {
                 )}
               </div>
 
+              {/* Budget Tolerance % (+/-) */}
+              <div className="md:col-span-3 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="tolerance-select" className="block text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1">
+                    <Percent className="w-3.5 h-3.5 text-blue-600" />
+                    Budget Tolerance (±%)
+                  </label>
+                  <span className="text-xs font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                    {tolerancePct === 0 ? 'Exact Budget' : `±${tolerancePct}%`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    id="tolerance-select"
+                    value={tolerancePct}
+                    onChange={(e) => setTolerancePct(Number(e.target.value))}
+                    className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 font-semibold text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 transition cursor-pointer"
+                  >
+                    <option value={0}>±0% (Exact Budget)</option>
+                    <option value={5}>±5% ({formatSGD(Math.round(numericBudget * 0.05))})</option>
+                    <option value={10}>±10% ({formatSGD(Math.round(numericBudget * 0.10))})</option>
+                    <option value={15}>±15% ({formatSGD(Math.round(numericBudget * 0.15))})</option>
+                    <option value={20}>±20% ({formatSGD(Math.round(numericBudget * 0.20))})</option>
+                    <option value={25}>±25% ({formatSGD(Math.round(numericBudget * 0.25))})</option>
+                    <option value={30}>±30% ({formatSGD(Math.round(numericBudget * 0.30))})</option>
+                  </select>
+                </div>
+              </div>
+
               {/* Flat Type Dropdown */}
               <div className="md:col-span-3 space-y-1.5">
                 <label htmlFor="flattype-select" className="block text-xs font-bold uppercase tracking-wider text-slate-600">
@@ -548,30 +660,11 @@ export default function App() {
                   id="flattype-select"
                   value={flatType}
                   onChange={(e) => setFlatType(e.target.value)}
-                  className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 font-medium text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
+                  className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 font-medium text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 transition cursor-pointer"
                 >
                   {FLAT_TYPES.map((ft) => (
                     <option key={ft.value} value={ft.value}>
                       {ft.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Period Selector */}
-              <div className="md:col-span-2 space-y-1.5">
-                <label htmlFor="months-select" className="block text-xs font-bold uppercase tracking-wider text-slate-600">
-                  Time Period
-                </label>
-                <select
-                  id="months-select"
-                  value={months}
-                  onChange={(e) => setMonths(Number(e.target.value))}
-                  className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 font-medium text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 transition"
-                >
-                  {MONTH_OPTIONS.map((mo) => (
-                    <option key={mo.value} value={mo.value}>
-                      {mo.label}
                     </option>
                   ))}
                 </select>
@@ -599,19 +692,94 @@ export default function App() {
               </div>
             </div>
 
-            {/* Quick Budget Presets */}
-            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-              <span className="text-xs text-slate-500 font-medium">Quick Presets:</span>
-              {BUDGET_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => handleSelectPreset(preset)}
-                  className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer"
-                >
-                  {formatSGD(preset)}
-                </button>
-              ))}
+            {/* Live Effective Range Banner & Tolerance Controls */}
+            <div className="pt-2 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-slate-500 font-medium">Quick Budget:</span>
+                {BUDGET_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => handleSelectPreset(preset)}
+                    className="px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition cursor-pointer"
+                  >
+                    {formatSGD(preset)}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-slate-500 font-medium">Quick ±%:</span>
+                {TOLERANCE_PRESETS.map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => setTolerancePct(pct)}
+                    className={`px-2 py-0.5 text-xs font-semibold rounded-md transition cursor-pointer ${
+                      tolerancePct === pct
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {pct === 0 ? 'Exact' : `±${pct}%`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Range Mode & Effective Band Summary */}
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Sliders className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="text-xs text-slate-600 font-medium">Display Range:</span>
+                <span className="text-xs font-bold text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
+                  {tolerancePct === 0
+                    ? `Up to ${formatSGD(previewMaxPrice)} (Exact Budget)`
+                    : rangeMode === 'band'
+                    ? `${formatSGD(previewMinPrice)} – ${formatSGD(previewMaxPrice)} (±${tolerancePct}%)`
+                    : `Up to ${formatSGD(previewMaxPrice)} (+${tolerancePct}% ceiling)`}
+                </span>
+                {tolerancePct > 0 && (
+                  <span className="text-[11px] text-blue-700 font-medium">
+                    ({rangeMode === 'band' ? `-${formatSGD(numericBudget - previewMinPrice)} / ` : ''}
+                    +{formatSGD(previewMaxPrice - numericBudget)})
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 text-xs">
+                {tolerancePct > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-slate-500 font-medium cursor-pointer flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={rangeMode === 'band'}
+                        onChange={(e) => setRangeMode(e.target.checked ? 'band' : 'ceiling')}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <span>Filter strictly within ±{tolerancePct}% band</span>
+                    </label>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor="months-inline" className="text-slate-500 font-medium">
+                    Months:
+                  </label>
+                  <select
+                    id="months-inline"
+                    value={months}
+                    onChange={(e) => setMonths(Number(e.target.value))}
+                    className="bg-white rounded-lg border border-slate-300 px-2 py-0.5 text-xs text-slate-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                  >
+                    {MONTH_OPTIONS.map((mo) => (
+                      <option key={mo.value} value={mo.value}>
+                        {mo.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
           </form>
         </div>
@@ -627,7 +795,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Plain sentence when nothing is within budget */}
+        {/* Plain sentence when nothing is within budget / range */}
         {searchDone && !loading && blocks.length === 0 && (
           <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 shadow-xs">
             <div className="flex items-start gap-4">
@@ -636,10 +804,15 @@ export default function App() {
               </div>
               <div className="space-y-2">
                 <h3 className="text-base font-bold text-amber-900">
-                  No resale flat transactions found within {formatSGD(searchedBudget)}
+                  {appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
+                    ? `No resale flat transactions found between ${formatSGD(appliedSearch.minPrice)} and ${formatSGD(appliedSearch.maxPrice)}`
+                    : `No resale flat transactions found within ${formatSGD(appliedSearch.maxPrice)}`}
                 </h3>
                 <p className="text-sm text-amber-800 leading-relaxed">
-                  No transactions were registered at or under {formatSGD(searchedBudget)}{' '}
+                  No transactions were registered{' '}
+                  {appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
+                    ? `within ±${appliedSearch.tolerancePct}% of ${formatSGD(appliedSearch.budget)} (${formatSGD(appliedSearch.minPrice)} – ${formatSGD(appliedSearch.maxPrice)})`
+                    : `at or under ${formatSGD(appliedSearch.maxPrice)}`}{' '}
                   {flatType ? `for ${flatType} flats` : 'across all flat types'} in the requested period.
                   {lowestMedianTown && (
                     <span className="font-semibold block mt-1">
@@ -672,7 +845,7 @@ export default function App() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Within Budget Towns
+                {appliedSearch.tolerancePct > 0 ? `Within ±${appliedSearch.tolerancePct}% Towns` : 'Within Budget Towns'}
               </div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-2xl font-black text-slate-900">{withinBudgetTowns.length}</span>
@@ -680,14 +853,14 @@ export default function App() {
               </div>
               <p className="text-xs text-slate-500 mt-1">
                 {withinBudgetTowns.length > 0
-                  ? 'Town medians at or under budget'
-                  : 'No town medians within budget'}
+                  ? `Town medians in range`
+                  : 'No town medians in range'}
               </p>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Blocks At / Under Budget
+                Transactions In Range
               </div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-2xl font-black text-blue-600">{blocks.length}</span>
@@ -781,7 +954,10 @@ export default function App() {
                     HDB Town Summary
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Sorted by median price ascending. Towns within budget are highlighted.
+                    Sorted by median price ascending.
+                    {appliedSearch.tolerancePct > 0
+                      ? ` Highlighted within ${formatSGD(appliedSearch.minPrice)} – ${formatSGD(appliedSearch.maxPrice)}.`
+                      : ` Highlighted within ${formatSGD(appliedSearch.budget)}.`}
                   </p>
                 </div>
                 {selectedTownFilter && (
@@ -856,7 +1032,11 @@ export default function App() {
                               {t.within_budget ? (
                                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                                   <CheckCircle2 className="w-3 h-3" />
-                                  Within Budget
+                                  {appliedSearch.tolerancePct > 0 ? `Within ±${appliedSearch.tolerancePct}%` : 'Within Budget'}
+                                </span>
+                              ) : t.within_ceiling ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                  Under Range
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
@@ -873,7 +1053,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Section 2: Block List (Up to 50 transactions at or under budget) */}
+            {/* Section 2: Block List (Up to 50 transactions within budget / tolerance) */}
             <div
               className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden ${
                 activeTab === 'towns' ? 'hidden lg:block' : 'block'
@@ -883,7 +1063,7 @@ export default function App() {
                 <div>
                   <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
                     <List className="w-5 h-5 text-blue-600" />
-                    Recent Transactions At or Under Budget
+                    Transactions in Budget Range
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Showing {displayedBlocks.length} transaction{displayedBlocks.length === 1 ? '' : 's'}{' '}
@@ -911,6 +1091,13 @@ export default function App() {
                       selectedBlock.block === blk.block &&
                       selectedBlock.street_name === blk.street_name &&
                       selectedBlock.resale_price === blk.resale_price;
+
+                    const priceDiff = blk.resale_price - appliedSearch.budget;
+                    const diffPercent = appliedSearch.budget > 0
+                      ? ((priceDiff / appliedSearch.budget) * 100).toFixed(1)
+                      : '0';
+                    const isOverBudget = priceDiff > 0;
+                    const diffSign = isOverBudget ? '+' : '';
 
                     return (
                       <div
@@ -942,10 +1129,23 @@ export default function App() {
                         </div>
 
                         <div className="text-left sm:text-right shrink-0">
-                          <div className="text-base font-extrabold text-emerald-700">
-                            {formatSGD(blk.resale_price)}
+                          <div className="flex items-baseline sm:justify-end gap-1.5">
+                            <span className="text-base font-extrabold text-emerald-700">
+                              {formatSGD(blk.resale_price)}
+                            </span>
+                            {appliedSearch.tolerancePct > 0 && (
+                              <span
+                                className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${
+                                  isOverBudget
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-emerald-100 text-emerald-800'
+                                }`}
+                              >
+                                {diffSign}{diffPercent}%
+                              </span>
+                            )}
                           </div>
-                          <div className="text-xs text-slate-500 font-medium">
+                          <div className="text-xs text-slate-500 font-medium mt-0.5">
                             Month: {blk.month}
                           </div>
                           {blk.lat ? (
@@ -996,7 +1196,7 @@ export default function App() {
                       }
                     }}
                     title="Reset Map View"
-                    className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition"
+                    className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                   </button>

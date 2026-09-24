@@ -21,9 +21,13 @@ export default async function handler(req, res) {
     process.env.ONEMAP_PASSWORD && process.env.ONEMAP_PASSWORD.trim().length > 0
   );
 
+  const startTotal = Date.now();
+
   // Check data.gov.sg
   let dataGovStatus = null;
   let dataGovOk = false;
+  let dataGovLatencyMs = null;
+  const dgStart = Date.now();
   try {
     const dataGovHeaders = {};
     if (dataGovApiKeyConfigured) {
@@ -33,9 +37,11 @@ export default async function handler(req, res) {
       'https://data.gov.sg/api/action/datastore_search?resource_id=d_8b84c4ee58e3cfc0ece0d773c8ca6abc&limit=1',
       { headers: dataGovHeaders }
     );
+    dataGovLatencyMs = Date.now() - dgStart;
     dataGovStatus = dgRes.status;
     dataGovOk = dgRes.ok;
   } catch {
+    dataGovLatencyMs = Date.now() - dgStart;
     dataGovStatus = 503;
     dataGovOk = false;
   }
@@ -43,13 +49,17 @@ export default async function handler(req, res) {
   // Check OneMap
   let oneMapStatus = null;
   let oneMapOk = false;
+  let oneMapLatencyMs = null;
+  const omStart = Date.now();
   try {
     const omRes = await fetch(
       'https://www.onemap.gov.sg/api/common/elastic/search?searchVal=Singapore&returnGeom=Y&getAddrDetails=Y&pageNum=1'
     );
+    oneMapLatencyMs = Date.now() - omStart;
     oneMapStatus = omRes.status;
     oneMapOk = omRes.ok;
   } catch {
+    oneMapLatencyMs = Date.now() - omStart;
     oneMapStatus = 503;
     oneMapOk = false;
   }
@@ -57,6 +67,7 @@ export default async function handler(req, res) {
   return res.status(200).json({
     status: dataGovOk && oneMapOk ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
+    total_latency_ms: Date.now() - startTotal,
     credentials: {
       data_gov_sg_api_key_configured: dataGovApiKeyConfigured,
       onemap_email_configured: oneMapEmailConfigured,
@@ -66,10 +77,12 @@ export default async function handler(req, res) {
       data_gov_sg: {
         status: dataGovStatus,
         ok: dataGovOk,
+        latency_ms: dataGovLatencyMs,
       },
       onemap: {
         status: oneMapStatus,
         ok: oneMapOk,
+        latency_ms: oneMapLatencyMs,
       },
     },
   });

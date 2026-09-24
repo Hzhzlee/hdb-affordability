@@ -19,8 +19,10 @@ import {
   CheckCircle2,
   RefreshCw,
   Percent,
-  Sliders
+  Sliders,
+  Activity
 } from 'lucide-react';
+import { ApiHealthDashboard } from './ApiHealthDashboard';
 
 interface TownSummary {
   town: string;
@@ -126,6 +128,47 @@ export default function App() {
 
   // Active view tab on mobile
   const [activeTab, setActiveTab] = useState<'towns' | 'blocks' | 'map'>('towns');
+
+  // App View Mode: 'search' or 'health-dashboard'
+  const [currentView, setCurrentView] = useState<'search' | 'health-dashboard'>('search');
+  const [systemHealth, setSystemHealth] = useState<'healthy' | 'degraded' | 'checking'>('checking');
+
+  // Monitor URL hash for view routing (#health or #search)
+  useEffect(() => {
+    const handleHash = () => {
+      if (window.location.hash === '#health') {
+        setCurrentView('health-dashboard');
+      } else {
+        setCurrentView('search');
+      }
+    };
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const navigateTo = (view: 'search' | 'health-dashboard') => {
+    setCurrentView(view);
+    window.location.hash = view === 'health-dashboard' ? '#health' : '#search';
+  };
+
+  // Check health once on startup for header badge
+  useEffect(() => {
+    const checkHeaderHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const data = await res.json();
+          setSystemHealth(data.status === 'healthy' ? 'healthy' : 'degraded');
+        } else {
+          setSystemHealth('degraded');
+        }
+      } catch {
+        setSystemHealth('degraded');
+      }
+    };
+    checkHeaderHealth();
+  }, []);
 
   // Map references
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -571,6 +614,10 @@ export default function App() {
     }).format(now);
   }, []);
 
+  if (currentView === 'health-dashboard') {
+    return <ApiHealthDashboard onBackToSearch={() => navigateTo('search')} />;
+  }
+
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans">
       {/* Top Header */}
@@ -591,16 +638,34 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            <a
-              href="/api/health"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition"
-              title="Inspect upstream API connectivity"
+            <button
+              type="button"
+              onClick={() => navigateTo('health-dashboard')}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold transition border shadow-2xs cursor-pointer ${
+                systemHealth === 'healthy'
+                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                  : systemHealth === 'degraded'
+                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+              }`}
+              title="Open Live API & System Health Dashboard"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>
-              API Health
-            </a>
+              <Activity className="w-3.5 h-3.5 text-blue-600" />
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  systemHealth === 'healthy'
+                    ? 'bg-emerald-500 animate-pulse'
+                    : systemHealth === 'degraded'
+                    ? 'bg-amber-500'
+                    : 'bg-slate-400'
+                }`}
+              ></span>
+              <span className="hidden sm:inline">API Health Dashboard</span>
+              <span className="sm:hidden">Health</span>
+              <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-white/90 border border-slate-200/60 hidden md:inline">
+                {systemHealth === 'healthy' ? 'Operational' : systemHealth === 'degraded' ? 'Degraded' : 'Live'}
+              </span>
+            </button>
           </div>
         </div>
       </header>

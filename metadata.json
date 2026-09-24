@@ -1,0 +1,6 @@
+{
+  "name": "HDB Affordability Search",
+  "description": "Interactive HDB resale flat affordability search by budget, town medians, and OneMap visualization in Singapore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

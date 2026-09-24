@@ -146,7 +146,8 @@ export default function App() {
 
   // Live preview range calculations
   const previewMinPrice = useMemo(() => {
-    if (tolerancePct === 0 || rangeMode === 'ceiling') return 0;
+    if (rangeMode === 'ceiling') return 0;
+    if (tolerancePct === 0) return numericBudget;
     return Math.max(0, Math.round(numericBudget * (1 - tolerancePct / 100)));
   }, [numericBudget, tolerancePct, rangeMode]);
 
@@ -436,20 +437,39 @@ export default function App() {
 
         const marker = L.marker([blockItem.lat, blockItem.lng], { icon: pinIcon });
 
-        const varianceBadge = `
-          <span style="
-            display: inline-block;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 2px 6px;
-            border-radius: 6px;
-            background: ${isOverBudget ? '#ffedd5' : '#d1fae5'};
-            color: ${isOverBudget ? '#c2410c' : '#047857'};
-            margin-left: 6px;
-          ">
-            ${diffSign}${diffPercent}% vs Target
-          </span>
-        `;
+        const isExactMode = appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band';
+        const varianceBadge = isExactMode
+          ? `
+            <span style="
+              display: inline-block;
+              font-size: 11px;
+              font-weight: 700;
+              padding: 2px 6px;
+              border-radius: 6px;
+              background: #d1fae5;
+              color: #047857;
+              border: 1px solid #a7f3d0;
+              margin-left: 6px;
+            ">
+              Exact Target
+            </span>
+          `
+          : appliedSearch.tolerancePct > 0
+          ? `
+            <span style="
+              display: inline-block;
+              font-size: 11px;
+              font-weight: 700;
+              padding: 2px 6px;
+              border-radius: 6px;
+              background: ${isOverBudget ? '#ffedd5' : '#d1fae5'};
+              color: ${isOverBudget ? '#c2410c' : '#047857'};
+              margin-left: 6px;
+            ">
+              ${diffSign}${diffPercent}% vs Target
+            </span>
+          `
+          : '';
 
         const popupContent = `
           <div style="font-family: system-ui, -apple-system, sans-serif; min-width: 220px; padding: 4px;">
@@ -467,7 +487,7 @@ export default function App() {
               <span style="font-size: 12px; color: #64748b;">Resale Price:</span>
               <div style="display: flex; align-items: baseline;">
                 <span style="font-size: 14px; font-weight: 800; color: #059669;">${formatSGD(blockItem.resale_price)}</span>
-                ${appliedSearch.tolerancePct > 0 ? varianceBadge : ''}
+                ${varianceBadge}
               </div>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
@@ -629,24 +649,67 @@ export default function App() {
                     <Percent className="w-3.5 h-3.5 text-blue-600" />
                     Budget Tolerance (±%)
                   </label>
-                  <span className="text-xs font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
-                    {tolerancePct === 0 ? 'Exact Budget' : `±${tolerancePct}%`}
+                  <span className={`text-xs font-bold px-1.5 py-0.5 rounded border ${
+                    tolerancePct === 0 && rangeMode === 'band'
+                      ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                      : 'text-blue-700 bg-blue-50 border-blue-200'
+                  }`}>
+                    {tolerancePct === 0 && rangeMode === 'band'
+                      ? 'Exact Only'
+                      : tolerancePct === 0 && rangeMode === 'ceiling'
+                      ? 'Up to Budget'
+                      : `±${tolerancePct}%`}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <select
                     id="tolerance-select"
-                    value={tolerancePct}
-                    onChange={(e) => setTolerancePct(Number(e.target.value))}
+                    value={
+                      rangeMode === 'ceiling' && tolerancePct === 0
+                        ? 'ceiling'
+                        : tolerancePct === 0
+                        ? 'exact'
+                        : String(tolerancePct)
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'exact') {
+                        setTolerancePct(0);
+                        setRangeMode('band');
+                      } else if (val === 'ceiling') {
+                        setTolerancePct(0);
+                        setRangeMode('ceiling');
+                      } else {
+                        setTolerancePct(Number(val));
+                        setRangeMode('band');
+                      }
+                    }}
                     className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 font-semibold text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 transition cursor-pointer"
                   >
-                    <option value={0}>±0% (Exact Budget)</option>
-                    <option value={5}>±5% ({formatSGD(Math.round(numericBudget * 0.05))})</option>
-                    <option value={10}>±10% ({formatSGD(Math.round(numericBudget * 0.10))})</option>
-                    <option value={15}>±15% ({formatSGD(Math.round(numericBudget * 0.15))})</option>
-                    <option value={20}>±20% ({formatSGD(Math.round(numericBudget * 0.20))})</option>
-                    <option value={25}>±25% ({formatSGD(Math.round(numericBudget * 0.25))})</option>
-                    <option value={30}>±30% ({formatSGD(Math.round(numericBudget * 0.30))})</option>
+                    <option value="exact">
+                      Exact ({formatSGD(numericBudget)} only — no lower prices)
+                    </option>
+                    <option value="ceiling">
+                      Up to {formatSGD(numericBudget)} (at or under budget)
+                    </option>
+                    <option value="5">
+                      ±5% ({formatSGD(Math.round(numericBudget * 0.95))} – {formatSGD(Math.round(numericBudget * 1.05))})
+                    </option>
+                    <option value="10">
+                      ±10% ({formatSGD(Math.round(numericBudget * 0.90))} – {formatSGD(Math.round(numericBudget * 1.10))})
+                    </option>
+                    <option value="15">
+                      ±15% ({formatSGD(Math.round(numericBudget * 0.85))} – {formatSGD(Math.round(numericBudget * 1.15))})
+                    </option>
+                    <option value="20">
+                      ±20% ({formatSGD(Math.round(numericBudget * 0.80))} – {formatSGD(Math.round(numericBudget * 1.20))})
+                    </option>
+                    <option value="25">
+                      ±25% ({formatSGD(Math.round(numericBudget * 0.75))} – {formatSGD(Math.round(numericBudget * 1.25))})
+                    </option>
+                    <option value="30">
+                      ±30% ({formatSGD(Math.round(numericBudget * 0.70))} – {formatSGD(Math.round(numericBudget * 1.30))})
+                    </option>
                   </select>
                 </div>
               </div>
@@ -709,19 +772,50 @@ export default function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-slate-500 font-medium">Quick ±%:</span>
-                {TOLERANCE_PRESETS.map((pct) => (
+                <span className="text-slate-500 font-medium">Quick Target:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTolerancePct(0);
+                    setRangeMode('band');
+                  }}
+                  className={`px-2.5 py-0.5 text-xs font-bold rounded-md transition cursor-pointer ${
+                    tolerancePct === 0 && rangeMode === 'band'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  Exact ({formatSGD(numericBudget)})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTolerancePct(0);
+                    setRangeMode('ceiling');
+                  }}
+                  className={`px-2 py-0.5 text-xs font-semibold rounded-md transition cursor-pointer ${
+                    tolerancePct === 0 && rangeMode === 'ceiling'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  Up to Budget
+                </button>
+                {[5, 10, 15, 20, 25].map((pct) => (
                   <button
                     key={pct}
                     type="button"
-                    onClick={() => setTolerancePct(pct)}
+                    onClick={() => {
+                      setTolerancePct(pct);
+                      setRangeMode('band');
+                    }}
                     className={`px-2 py-0.5 text-xs font-semibold rounded-md transition cursor-pointer ${
-                      tolerancePct === pct
+                      tolerancePct === pct && rangeMode === 'band'
                         ? 'bg-blue-600 text-white shadow-xs'
                         : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                     }`}
                   >
-                    {pct === 0 ? 'Exact' : `±${pct}%`}
+                    ±{pct}%
                   </button>
                 ))}
               </div>
@@ -733,12 +827,17 @@ export default function App() {
                 <Sliders className="w-4 h-4 text-blue-600 shrink-0" />
                 <span className="text-xs text-slate-600 font-medium">Display Range:</span>
                 <span className="text-xs font-bold text-slate-900 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
-                  {tolerancePct === 0
-                    ? `Up to ${formatSGD(previewMaxPrice)} (Exact Budget)`
-                    : rangeMode === 'band'
-                    ? `${formatSGD(previewMinPrice)} – ${formatSGD(previewMaxPrice)} (±${tolerancePct}%)`
-                    : `Up to ${formatSGD(previewMaxPrice)} (+${tolerancePct}% ceiling)`}
+                  {tolerancePct === 0 && rangeMode === 'band'
+                    ? `Exact: ${formatSGD(numericBudget)} only (no lower or higher prices)`
+                    : rangeMode === 'ceiling'
+                    ? `Up to ${formatSGD(previewMaxPrice)} (at or under budget)`
+                    : `${formatSGD(previewMinPrice)} – ${formatSGD(previewMaxPrice)} (±${tolerancePct}%)`}
                 </span>
+                {tolerancePct === 0 && rangeMode === 'band' && (
+                  <span className="text-[11px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Lower prices excluded
+                  </span>
+                )}
                 {tolerancePct > 0 && (
                   <span className="text-[11px] text-blue-700 font-medium">
                     ({rangeMode === 'band' ? `-${formatSGD(numericBudget - previewMinPrice)} / ` : ''}
@@ -804,13 +903,17 @@ export default function App() {
               </div>
               <div className="space-y-2">
                 <h3 className="text-base font-bold text-amber-900">
-                  {appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
+                  {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                    ? `No resale flat transactions found matching exactly ${formatSGD(appliedSearch.budget)}`
+                    : appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
                     ? `No resale flat transactions found between ${formatSGD(appliedSearch.minPrice)} and ${formatSGD(appliedSearch.maxPrice)}`
                     : `No resale flat transactions found within ${formatSGD(appliedSearch.maxPrice)}`}
                 </h3>
                 <p className="text-sm text-amber-800 leading-relaxed">
                   No transactions were registered{' '}
-                  {appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
+                  {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                    ? `matching exactly ${formatSGD(appliedSearch.budget)} (lower and higher prices excluded)`
+                    : appliedSearch.tolerancePct > 0 && appliedSearch.rangeMode === 'band'
                     ? `within ±${appliedSearch.tolerancePct}% of ${formatSGD(appliedSearch.budget)} (${formatSGD(appliedSearch.minPrice)} – ${formatSGD(appliedSearch.maxPrice)})`
                     : `at or under ${formatSGD(appliedSearch.maxPrice)}`}{' '}
                   {flatType ? `for ${flatType} flats` : 'across all flat types'} in the requested period.
@@ -845,7 +948,11 @@ export default function App() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                {appliedSearch.tolerancePct > 0 ? `Within ±${appliedSearch.tolerancePct}% Towns` : 'Within Budget Towns'}
+                {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                  ? 'Exact Target Towns'
+                  : appliedSearch.tolerancePct > 0
+                  ? `Within ±${appliedSearch.tolerancePct}% Towns`
+                  : 'Within Budget Towns'}
               </div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-2xl font-black text-slate-900">{withinBudgetTowns.length}</span>
@@ -853,7 +960,9 @@ export default function App() {
               </div>
               <p className="text-xs text-slate-500 mt-1">
                 {withinBudgetTowns.length > 0
-                  ? `Town medians in range`
+                  ? appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                    ? `Towns with median ${formatSGD(appliedSearch.budget)}`
+                    : `Town medians in range`
                   : 'No town medians in range'}
               </p>
             </div>
@@ -867,7 +976,11 @@ export default function App() {
                 <span className="text-xs text-slate-500">recent transactions</span>
               </div>
               <p className="text-xs text-slate-500 mt-1">
-                {loadingGeocodes ? 'Geocoding OneMap coords...' : 'Mapped on Singapore tiles'}
+                {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                  ? `Exact ${formatSGD(appliedSearch.budget)} only`
+                  : loadingGeocodes
+                  ? 'Geocoding OneMap coords...'
+                  : 'Mapped on Singapore tiles'}
               </p>
             </div>
 
@@ -955,9 +1068,11 @@ export default function App() {
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Sorted by median price ascending.
-                    {appliedSearch.tolerancePct > 0
+                    {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                      ? ` Highlighted for towns whose median is exactly ${formatSGD(appliedSearch.budget)}.`
+                      : appliedSearch.tolerancePct > 0
                       ? ` Highlighted within ${formatSGD(appliedSearch.minPrice)} – ${formatSGD(appliedSearch.maxPrice)}.`
-                      : ` Highlighted within ${formatSGD(appliedSearch.budget)}.`}
+                      : ` Highlighted at or under ${formatSGD(appliedSearch.budget)}.`}
                   </p>
                 </div>
                 {selectedTownFilter && (
@@ -1032,8 +1147,22 @@ export default function App() {
                               {t.within_budget ? (
                                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                                   <CheckCircle2 className="w-3 h-3" />
-                                  {appliedSearch.tolerancePct > 0 ? `Within ±${appliedSearch.tolerancePct}%` : 'Within Budget'}
+                                  {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                                    ? 'Exact Match'
+                                    : appliedSearch.tolerancePct > 0
+                                    ? `Within ±${appliedSearch.tolerancePct}%`
+                                    : 'Within Budget'}
                                 </span>
+                              ) : appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band' ? (
+                                t.median < appliedSearch.budget ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                    Below Budget
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600">
+                                    Above Budget
+                                  </span>
+                                )
                               ) : t.within_ceiling ? (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
                                   Under Range
@@ -1063,11 +1192,16 @@ export default function App() {
                 <div>
                   <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
                     <List className="w-5 h-5 text-blue-600" />
-                    Transactions in Budget Range
+                    {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                      ? 'Exact Price Transactions'
+                      : 'Transactions in Budget Range'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Showing {displayedBlocks.length} transaction{displayedBlocks.length === 1 ? '' : 's'}{' '}
                     (most recent first)
+                    {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band'
+                      ? ` matching exactly ${formatSGD(appliedSearch.budget)}`
+                      : ''}
                     {selectedTownFilter && ` in ${selectedTownFilter}`}
                   </p>
                 </div>
@@ -1133,7 +1267,11 @@ export default function App() {
                             <span className="text-base font-extrabold text-emerald-700">
                               {formatSGD(blk.resale_price)}
                             </span>
-                            {appliedSearch.tolerancePct > 0 && (
+                            {appliedSearch.tolerancePct === 0 && appliedSearch.rangeMode === 'band' ? (
+                              <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Exact Match
+                              </span>
+                            ) : appliedSearch.tolerancePct > 0 ? (
                               <span
                                 className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${
                                   isOverBudget
@@ -1143,7 +1281,7 @@ export default function App() {
                               >
                                 {diffSign}{diffPercent}%
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           <div className="text-xs text-slate-500 font-medium mt-0.5">
                             Month: {blk.month}

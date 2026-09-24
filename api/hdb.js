@@ -70,9 +70,11 @@ export default async function handler(req, res) {
   // Range mode: 'band' (min to max price) or 'ceiling' (up to max price)
   const rangeMode = String(req.query?.range_mode || 'band').toLowerCase() === 'ceiling' ? 'ceiling' : 'band';
   const maxPrice = Math.round(budget * (1 + tolerancePct / 100));
-  const minPrice = tolerancePct > 0 && rangeMode === 'band'
-    ? Math.max(0, Math.round(budget * (1 - tolerancePct / 100)))
-    : 0;
+  const minPrice = rangeMode === 'ceiling'
+    ? 0
+    : tolerancePct === 0
+    ? budget
+    : Math.max(0, Math.round(budget * (1 - tolerancePct / 100)));
 
   // Configure headers for data.gov.sg
   const headers = {};
@@ -190,9 +192,11 @@ export default async function handler(req, res) {
       median = Math.round((prices[count / 2 - 1] + prices[count / 2]) / 2);
     }
 
-    const isWithinBudget = tolerancePct > 0 && rangeMode === 'band'
-      ? median >= minPrice && median <= maxPrice
-      : median <= maxPrice;
+    const isWithinBudget = rangeMode === 'ceiling'
+      ? median <= maxPrice
+      : tolerancePct === 0
+      ? median === budget
+      : median >= minPrice && median <= maxPrice;
 
     towns.push({
       town: townName,

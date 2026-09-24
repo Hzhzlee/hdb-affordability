@@ -1,1 +1,27 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+/* Ensure Leaflet tiles and container fill the space properly */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  background-color: #e2e8f0;
+  font-family: inherit;
+}
+
+/* Custom popup styling */
+.leaflet-popup-content-wrapper {
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  padding: 2px;
+}
+
+.leaflet-popup-content {
+  margin: 10px 12px;
+  line-height: 1.4;
+}
+
+.custom-hdb-pin {
+  background: transparent;
+  border: none;
+}

@@ -3,27 +3,21 @@
  * Singapore Resale Flat Price Explorer by Budget & OneMap Visualization
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 import {
   Search,
   Building2,
   MapPin,
-  Calendar,
-  Layers,
   ChevronRight,
-  TrendingDown,
   Info,
-  DollarSign,
-  Filter,
-  CheckCircle2,
   AlertCircle,
   ExternalLink,
-  Sparkles,
   Map as MapIcon,
   List,
-  Home
+  Home,
+  CheckCircle2,
+  RefreshCw
 } from 'lucide-react';
 
 interface TownSummary {
@@ -79,7 +73,7 @@ const MONTH_OPTIONS = [
 
 const BUDGET_PRESETS = [400000, 500000, 600000, 750000, 900000];
 
-// Format number with commas
+// Format number with SGD currency styling
 function formatSGD(num: number): string {
   return new Intl.NumberFormat('en-SG', {
     style: 'currency',
@@ -110,12 +104,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'towns' | 'blocks' | 'map'>('towns');
 
   // Map references
-  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const markersMapRef = useRef<Map<string, L.Marker>>(new Map());
 
-  // Singapore bounds for Leaflet
+  // Singapore bounds for Leaflet map viewing
   const singaporeBounds = useMemo(() => {
     return L.latLngBounds([1.1304753, 103.59], [1.4705583, 104.094523]);
   }, []);
@@ -199,7 +193,6 @@ export default function App() {
   const geocodeBlocks = async (blocksToGeocode: BlockTransaction[]) => {
     setLoadingGeocodes(true);
     try {
-      // Extract unique addresses up to 50
       const addresses = blocksToGeocode
         .map((b) => `${b.block} ${b.street_name}`)
         .slice(0, 50);
@@ -216,7 +209,7 @@ export default function App() {
       }
 
       const geoData = await response.json();
-      const resultMap = new Map<string, { lat?: number; lng?: number }>();
+      const resultMap = new Map<string, { lat: number; lng: number }>();
       if (Array.isArray(geoData.results)) {
         for (const item of geoData.results) {
           if (item.address && typeof item.lat === 'number' && typeof item.lng === 'number') {
@@ -230,7 +223,7 @@ export default function App() {
         prevBlocks.map((blk) => {
           const key = `${blk.block} ${blk.street_name}`.toUpperCase();
           const geo = resultMap.get(key);
-          if (geo && typeof geo.lat === 'number' && typeof geo.lng === 'number') {
+          if (geo) {
             return { ...blk, lat: geo.lat, lng: geo.lng };
           }
           return blk;
@@ -243,31 +236,32 @@ export default function App() {
     }
   };
 
-  // Initialize Leaflet map
-  useEffect(() => {
-    if (!mapContainerRef.current) return;
-    if (mapInstanceRef.current) return;
+  // Initialize and mount Leaflet map safely
+  const initMap = useCallback(() => {
+    const container = mapContainerRef.current;
+    if (!container || mapInstanceRef.current) return;
 
-    // Create map
-    const map = L.map(mapContainerRef.current, {
+    const map = L.map(container, {
       center: [1.3521, 103.8198],
       zoom: 12,
       minZoom: 11,
       maxZoom: 19,
       maxBounds: singaporeBounds,
-      maxBoundsViscosity: 1.0,
+      maxBoundsViscosity: 0.9,
       zoomControl: true,
       attributionControl: true,
     });
 
     // OneMap Default basemap tiles
-    const oneMapLayer = L.tileLayer('https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png', {
-      minZoom: 11,
-      maxZoom: 19,
-      bounds: singaporeBounds,
-      attribution:
-        '<a href="https://www.onemap.gov.sg" target="_blank" rel="noopener noreferrer" style="margin-right: 4px; display: inline-flex; align-items: center; vertical-align: middle;"><img src="https://www.onemap.gov.sg/web-assets/images/logo/om_logo.png" style="height:16px;width:16px;margin-right:4px;" alt="OneMap"/>OneMap</a> &copy; contributors | Singapore Land Authority',
-    });
+    const oneMapLayer = L.tileLayer(
+      'https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png',
+      {
+        minZoom: 11,
+        maxZoom: 19,
+        attribution:
+          '<a href="https://www.onemap.gov.sg" target="_blank" rel="noopener noreferrer" style="margin-right: 4px; display: inline-flex; align-items: center; vertical-align: middle;"><img src="https://www.onemap.gov.sg/web-assets/images/logo/om_logo.png" style="height:16px;width:16px;margin-right:4px;" alt="OneMap"/>OneMap</a> &copy; contributors | Singapore Land Authority',
+      }
+    );
 
     oneMapLayer.addTo(map);
 
@@ -275,11 +269,40 @@ export default function App() {
     markersLayerRef.current = markersGroup;
     mapInstanceRef.current = map;
 
-    return () => {
-      map.remove();
-      mapInstanceRef.current = null;
-    };
+    // Force recalculate dimensions on initial load
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 150);
   }, [singaporeBounds]);
+
+  // Hook to ensure map initializes once container is attached
+  useEffect(() => {
+    initMap();
+
+    const handleResize = () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize();
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
+    };
+  }, [initMap]);
+
+  // Invalidate map size when switching to map tab on mobile
+  useEffect(() => {
+    if (activeTab === 'map' && mapInstanceRef.current) {
+      setTimeout(() => {
+        mapInstanceRef.current?.invalidateSize();
+      }, 100);
+    }
+  }, [activeTab]);
 
   // Filtered blocks based on town selection
   const displayedBlocks = useMemo(() => {
@@ -332,7 +355,7 @@ export default function App() {
               color: white;
               border-radius: 50% 50% 50% 0;
               transform: rotate(-45deg);
-              box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+              box-shadow: 0 3px 8px rgba(0,0,0,0.35);
               border: 2px solid white;
             ">
               <span style="transform: rotate(45deg); font-size: 13px; font-weight: bold; line-height: 1;">🏢</span>
@@ -349,7 +372,7 @@ export default function App() {
         const marker = L.marker([blockItem.lat, blockItem.lng], { icon: pinIcon });
 
         const popupContent = `
-          <div style="font-family: system-ui, sans-serif; min-width: 200px; padding: 4px;">
+          <div style="font-family: system-ui, -apple-system, sans-serif; min-width: 210px; padding: 4px;">
             <div style="font-size: 11px; font-weight: 700; color: #0284c7; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px;">
               ${blockItem.town}
             </div>
@@ -375,7 +398,7 @@ export default function App() {
           </div>
         `;
 
-        marker.bindPopup(popupContent, { maxWidth: 280 });
+        marker.bindPopup(popupContent, { maxWidth: 300 });
         marker.addTo(markersGroup);
 
         const key = `${blockItem.block}_${blockItem.street_name}_${idx}`;
@@ -404,7 +427,6 @@ export default function App() {
     const map = mapInstanceRef.current;
     if (map && typeof blockItem.lat === 'number' && typeof blockItem.lng === 'number') {
       map.setView([blockItem.lat, blockItem.lng], 16, { animate: true });
-      // Find marker and open popup
       for (const [_, marker] of markersMapRef.current.entries()) {
         const latLng = marker.getLatLng();
         if (
@@ -418,13 +440,13 @@ export default function App() {
     }
   };
 
-  // Initial load search
+  // Run initial search on mount
   useEffect(() => {
     handleSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Compute stats
+  // Compute summary stats
   const withinBudgetTowns = useMemo(() => towns.filter((t) => t.within_budget), [towns]);
   const lowestMedianTown = useMemo(() => (towns.length > 0 ? towns[0] : null), [towns]);
   const lowestOverallPrice = useMemo(() => {
@@ -448,7 +470,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans">
-      {/* Top Navigation Bar */}
+      {/* Top Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -460,7 +482,7 @@ export default function App() {
                 HDB Resale Affordability Search
               </h1>
               <p className="text-xs text-slate-500 font-medium hidden sm:block">
-                Singapore Resale Flat Affordability &amp; Median Analysis
+                Interactive Singapore Resale Flat Affordability &amp; Median Analysis
               </p>
             </div>
           </div>
@@ -480,7 +502,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Search Filter Box */}
         <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-slate-200">
@@ -605,7 +627,7 @@ export default function App() {
           </div>
         )}
 
-        {/* No within-budget transactions found notice */}
+        {/* Plain sentence when nothing is within budget */}
         {searchDone && !loading && blocks.length === 0 && (
           <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 shadow-xs">
             <div className="flex items-start gap-4">
@@ -645,8 +667,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Results Overview Metrics */}
-        {searchDone && !loading && towns.length > 0 && (
+        {/* Metrics Row */}
+        {towns.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -705,89 +727,99 @@ export default function App() {
         )}
 
         {/* Mobile View Switcher */}
-        {searchDone && !loading && (
-          <div className="lg:hidden flex rounded-xl bg-slate-200 p-1">
-            <button
-              onClick={() => setActiveTab('towns')}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
-                activeTab === 'towns'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Towns ({towns.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('blocks')}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
-                activeTab === 'blocks'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Blocks ({displayedBlocks.length})
-            </button>
-            <button
-              onClick={() => setActiveTab('map')}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
-                activeTab === 'map'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              OneMap ({blocks.filter((b) => b.lat).length})
-            </button>
-          </div>
-        )}
+        <div className="lg:hidden flex rounded-xl bg-slate-200 p-1">
+          <button
+            onClick={() => setActiveTab('towns')}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
+              activeTab === 'towns'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Towns ({towns.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('blocks')}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
+              activeTab === 'blocks'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Blocks ({displayedBlocks.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('map')}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${
+              activeTab === 'map'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            OneMap ({blocks.filter((b) => b.lat).length})
+          </button>
+        </div>
 
         {/* Main Grid: Left Column (Towns & Block List) + Right Column (Interactive OneMap) */}
-        {searchDone && !loading && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left Column */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Left Column */}
+          <div
+            className={`lg:col-span-6 space-y-6 ${
+              activeTab === 'map' ? 'hidden lg:block' : 'block'
+            }`}
+          >
+            {/* Section 1: Town Summary Table */}
             <div
-              className={`lg:col-span-6 space-y-6 ${
-                activeTab === 'map' ? 'hidden lg:block' : 'block'
+              className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden ${
+                activeTab === 'blocks' ? 'hidden lg:block' : 'block'
               }`}
             >
-              {/* Section 1: Town Summary Table */}
-              <div
-                className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden ${
-                  activeTab === 'blocks' ? 'hidden lg:block' : 'block'
-                }`}
-              >
-                <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50">
-                  <div>
-                    <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                      <Building2 className="w-5 h-5 text-blue-600" />
-                      HDB Town Summary
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Sorted by median price ascending. Towns within budget are highlighted in green.
-                    </p>
-                  </div>
-                  {selectedTownFilter && (
-                    <button
-                      onClick={() => setSelectedTownFilter(null)}
-                      className="text-xs px-2.5 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold transition cursor-pointer"
-                    >
-                      Clear filter ({selectedTownFilter}) ✕
-                    </button>
-                  )}
+              <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <Building2 className="w-5 h-5 text-blue-600" />
+                    HDB Town Summary
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Sorted by median price ascending. Towns within budget are highlighted.
+                  </p>
                 </div>
+                {selectedTownFilter && (
+                  <button
+                    onClick={() => setSelectedTownFilter(null)}
+                    className="text-xs px-2.5 py-1 rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold transition cursor-pointer"
+                  >
+                    Clear filter ({selectedTownFilter}) ✕
+                  </button>
+                )}
+              </div>
 
-                <div className="overflow-x-auto max-h-96 overflow-y-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-100 text-slate-700 text-xs uppercase font-bold sticky top-0 z-10">
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-100 text-slate-700 text-xs uppercase font-bold sticky top-0 z-10">
+                    <tr>
+                      <th className="py-3 px-4">Town</th>
+                      <th className="py-3 px-4">Median Price</th>
+                      <th className="py-3 px-4">Lowest Price</th>
+                      <th className="py-3 px-4 text-center">Txns</th>
+                      <th className="py-3 px-4 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {loading && towns.length === 0 ? (
                       <tr>
-                        <th className="py-3 px-4">Town</th>
-                        <th className="py-3 px-4">Median Price</th>
-                        <th className="py-3 px-4">Lowest Price</th>
-                        <th className="py-3 px-4 text-center">Txns</th>
-                        <th className="py-3 px-4 text-right">Status</th>
+                        <td colSpan={5} className="py-8 text-center text-slate-400 text-xs">
+                          Loading HDB town transactions...
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-medium">
-                      {towns.map((t) => {
+                    ) : towns.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-400 text-xs">
+                          No towns available. Run a search above.
+                        </td>
+                      </tr>
+                    ) : (
+                      towns.map((t) => {
                         const isFiltered = selectedTownFilter?.toUpperCase() === t.town.toUpperCase();
                         return (
                           <tr
@@ -799,7 +831,7 @@ export default function App() {
                               isFiltered
                                 ? 'bg-blue-50/80 ring-2 ring-blue-500 ring-inset'
                                 : t.within_budget
-                                ? 'bg-emerald-50/40'
+                                ? 'bg-emerald-50/50'
                                 : ''
                             }`}
                           >
@@ -834,174 +866,189 @@ export default function App() {
                             </td>
                           </tr>
                         );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Section 2: Block List (Up to 50 transactions at or under budget) */}
-              <div
-                className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden ${
-                  activeTab === 'towns' ? 'hidden lg:block' : 'block'
-                }`}
-              >
-                <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
-                  <div>
-                    <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                      <List className="w-5 h-5 text-blue-600" />
-                      Recent Transactions At or Under Budget
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Showing {displayedBlocks.length} transaction{displayedBlocks.length === 1 ? '' : 's'}{' '}
-                      (most recent first)
-                      {selectedTownFilter && ` in ${selectedTownFilter}`}
-                    </p>
-                  </div>
-                  {loadingGeocodes && (
-                    <span className="text-xs font-medium text-blue-600 flex items-center gap-1.5 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
-                      <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                      Geocoding...
-                    </span>
-                  )}
-                </div>
-
-                <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
-                  {displayedBlocks.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500 text-sm">
-                      No block transactions match this filter.
-                    </div>
-                  ) : (
-                    displayedBlocks.map((blk, idx) => {
-                      const isSelected =
-                        selectedBlock &&
-                        selectedBlock.block === blk.block &&
-                        selectedBlock.street_name === blk.street_name &&
-                        selectedBlock.resale_price === blk.resale_price;
-
-                      return (
-                        <div
-                          key={`${blk.block}-${blk.street_name}-${idx}`}
-                          onClick={() => handleSelectBlockFromList(blk)}
-                          className={`p-4 hover:bg-slate-50 transition cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                            isSelected ? 'bg-blue-50/80 border-l-4 border-blue-600' : ''
-                          }`}
-                        >
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-bold text-slate-900">
-                                Blk {blk.block} {blk.street_name}
-                              </span>
-                              <span className="text-xs px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-semibold">
-                                {blk.town}
-                              </span>
-                              <span className="text-xs px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 font-bold">
-                                {blk.flat_type}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-                              <span>Storey: {blk.storey_range}</span>
-                              <span>•</span>
-                              <span>Area: {blk.floor_area_sqm} sqm</span>
-                              <span>•</span>
-                              <span>Lease: {blk.remaining_lease}</span>
-                            </div>
-                          </div>
-
-                          <div className="text-left sm:text-right shrink-0">
-                            <div className="text-base font-extrabold text-emerald-700">
-                              {formatSGD(blk.resale_price)}
-                            </div>
-                            <div className="text-xs text-slate-500 font-medium">
-                              Month: {blk.month}
-                            </div>
-                            {blk.lat ? (
-                              <div className="text-[11px] text-blue-600 font-semibold mt-0.5 flex items-center sm:justify-end gap-1">
-                                <MapPin className="w-3 h-3" />
-                                Mapped on OneMap
-                              </div>
-                            ) : (
-                              <div className="text-[11px] text-slate-400 mt-0.5">
-                                Coordinates unlisted
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            {/* Right Column: OneMap Map Container */}
+            {/* Section 2: Block List (Up to 50 transactions at or under budget) */}
             <div
-              className={`lg:col-span-6 space-y-4 ${
-                activeTab === 'towns' || activeTab === 'blocks'
-                  ? 'hidden lg:block'
-                  : 'block'
+              className={`bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden ${
+                activeTab === 'towns' ? 'hidden lg:block' : 'block'
               }`}
             >
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col h-[600px] lg:h-[750px] sticky top-20">
-                <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50 shrink-0">
-                  <div className="flex items-center gap-2">
-                    <MapIcon className="w-5 h-5 text-blue-600" />
-                    <h2 className="text-base font-bold text-slate-900">
-                      OneMap Singapore View
-                    </h2>
-                  </div>
-                  <span className="text-xs text-slate-500 font-medium">
-                    {displayedBlocks.filter((b) => b.lat).length} of {displayedBlocks.length} geocoded
+              <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <List className="w-5 h-5 text-blue-600" />
+                    Recent Transactions At or Under Budget
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Showing {displayedBlocks.length} transaction{displayedBlocks.length === 1 ? '' : 's'}{' '}
+                    (most recent first)
+                    {selectedTownFilter && ` in ${selectedTownFilter}`}
+                  </p>
+                </div>
+                {loadingGeocodes && (
+                  <span className="text-xs font-medium text-blue-600 flex items-center gap-1.5 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
+                    <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                    Geocoding...
                   </span>
-                </div>
+                )}
+              </div>
 
-                {/* Leaflet Map Div */}
-                <div className="flex-1 w-full relative">
-                  <div
-                    ref={mapContainerRef}
-                    className="w-full h-full z-10"
-                    style={{ minHeight: '400px' }}
-                  />
+              <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto">
+                {displayedBlocks.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 text-sm">
+                    {loading ? 'Fetching transactions...' : 'No block transactions match this filter.'}
+                  </div>
+                ) : (
+                  displayedBlocks.map((blk, idx) => {
+                    const isSelected =
+                      selectedBlock &&
+                      selectedBlock.block === blk.block &&
+                      selectedBlock.street_name === blk.street_name &&
+                      selectedBlock.resale_price === blk.resale_price;
 
-                  {loadingGeocodes && (
-                    <div className="absolute top-3 right-3 z-20 bg-white/90 backdrop-blur-xs px-3 py-1.5 rounded-lg shadow-md border border-slate-200 flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                      Geocoding addresses...
-                    </div>
-                  )}
-
-                  {selectedBlock && (
-                    <div className="absolute bottom-4 left-4 right-4 z-20 bg-white/95 backdrop-blur-sm p-3.5 rounded-xl shadow-lg border border-slate-200 flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-bold text-blue-600 uppercase">
-                          Selected Block
+                    return (
+                      <div
+                        key={`${blk.block}-${blk.street_name}-${idx}`}
+                        onClick={() => handleSelectBlockFromList(blk)}
+                        className={`p-4 hover:bg-slate-50 transition cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          isSelected ? 'bg-blue-50/80 border-l-4 border-blue-600' : ''
+                        }`}
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-bold text-slate-900">
+                              Blk {blk.block} {blk.street_name}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-semibold">
+                              {blk.town}
+                            </span>
+                            <span className="text-xs px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 font-bold">
+                              {blk.flat_type}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                            <span>Storey: {blk.storey_range}</span>
+                            <span>•</span>
+                            <span>Area: {blk.floor_area_sqm} sqm</span>
+                            <span>•</span>
+                            <span>Lease: {blk.remaining_lease}</span>
+                          </div>
                         </div>
-                        <div className="text-sm font-bold text-slate-900">
-                          Blk {selectedBlock.block} {selectedBlock.street_name} ({selectedBlock.town})
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          {selectedBlock.flat_type} • {selectedBlock.floor_area_sqm} sqm • Month: {selectedBlock.month}
+
+                        <div className="text-left sm:text-right shrink-0">
+                          <div className="text-base font-extrabold text-emerald-700">
+                            {formatSGD(blk.resale_price)}
+                          </div>
+                          <div className="text-xs text-slate-500 font-medium">
+                            Month: {blk.month}
+                          </div>
+                          {blk.lat ? (
+                            <div className="text-[11px] text-blue-600 font-semibold mt-0.5 flex items-center sm:justify-end gap-1">
+                              <MapPin className="w-3 h-3" />
+                              Mapped on OneMap
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              Coordinates unlisted
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-base font-black text-emerald-700">
-                          {formatSGD(selectedBlock.resale_price)}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedBlock(null)}
-                          className="text-[11px] text-slate-500 hover:text-slate-800 underline mt-0.5 cursor-pointer"
-                        >
-                          Deselect
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
-        )}
+
+          {/* Right Column: OneMap Map Container */}
+          <div
+            className={`lg:col-span-6 space-y-4 ${
+              activeTab === 'towns' || activeTab === 'blocks'
+                ? 'hidden lg:block'
+                : 'block'
+            }`}
+          >
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col h-[550px] lg:h-[720px] sticky top-20">
+              <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50 shrink-0">
+                <div className="flex items-center gap-2">
+                  <MapIcon className="w-5 h-5 text-blue-600" />
+                  <h2 className="text-base font-bold text-slate-900">
+                    OneMap Singapore View
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 font-medium">
+                    {displayedBlocks.filter((b) => b.lat).length} of {displayedBlocks.length} geocoded
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (mapInstanceRef.current) {
+                        mapInstanceRef.current.invalidateSize();
+                        mapInstanceRef.current.fitBounds(singaporeBounds);
+                      }
+                    }}
+                    title="Reset Map View"
+                    className="p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Leaflet Map Div */}
+              <div className="flex-1 w-full relative min-h-[400px]">
+                <div
+                  ref={mapContainerRef}
+                  className="w-full h-full absolute inset-0 z-10"
+                  style={{ minHeight: '400px' }}
+                />
+
+                {loadingGeocodes && (
+                  <div className="absolute top-3 right-3 z-20 bg-white/90 backdrop-blur-xs px-3 py-1.5 rounded-lg shadow-md border border-slate-200 flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                    Geocoding addresses...
+                  </div>
+                )}
+
+                {selectedBlock && (
+                  <div className="absolute bottom-4 left-4 right-4 z-20 bg-white/95 backdrop-blur-sm p-3.5 rounded-xl shadow-lg border border-slate-200 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-bold text-blue-600 uppercase">
+                        Selected Block
+                      </div>
+                      <div className="text-sm font-bold text-slate-900">
+                        Blk {selectedBlock.block} {selectedBlock.street_name} ({selectedBlock.town})
+                      </div>
+                      <div className="text-xs text-slate-600">
+                        {selectedBlock.flat_type} • {selectedBlock.floor_area_sqm} sqm • Month: {selectedBlock.month}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-base font-black text-emerald-700">
+                        {formatSGD(selectedBlock.resale_price)}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBlock(null)}
+                        className="text-[11px] text-slate-500 hover:text-slate-800 underline mt-0.5 cursor-pointer"
+                      >
+                        Deselect
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
 
       {/* Mandatory Footer with exact attribution and open data licence link */}
